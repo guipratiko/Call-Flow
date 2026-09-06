@@ -8,6 +8,7 @@ import {
   mirrorPermissionRequestToCrm,
   rememberPendingCall,
   sendCallPermissionRequestMessage,
+  sendCallPermissionTemplateMessage,
   terminateWhatsappCall,
 } from '../services/callingService';
 import {
@@ -148,11 +149,40 @@ export async function postWhatsappCallPermissionRequest(
     }
 
     if (!isWithinCustomerServiceWindow(ctx.lastCustomerMessageAt)) {
-      throw new HttpError(
-        400,
-        'Fora da janela de 24h: use um template aprovado de permissão de chamada (política Meta). Pedido free-form bloqueado.',
-        'OUTSIDE_CSW'
-      );
+      const templateName = String(ctx.callPermissionTemplateName || '').trim();
+      const languageCode = String(ctx.callPermissionTemplateLanguage || 'pt_BR').trim() || 'pt_BR';
+      if (!templateName) {
+        throw new HttpError(
+          400,
+          'Fora da janela de 24h: selecione um template APPROVED de permissão de ligação nas definições da instância.',
+          'OUTSIDE_CSW'
+        );
+      }
+      const sentTpl = await sendCallPermissionTemplateMessage({
+        phoneNumberId: ctx.phoneNumberId,
+        accessToken: ctx.accessToken,
+        to: ctx.waId,
+        templateName,
+        languageCode,
+        bodyParams: ctx.callPermissionTemplateBodyParams || [],
+      });
+      await mirrorPermissionRequestToCrm({
+        userId: ctx.userId,
+        instanceId: ctx.instanceId,
+        contactPhone: ctx.waId,
+        messageId: sentTpl.messageId,
+        bodyText: `[Template ${templateName}] Pedido de permissão de ligação`,
+      });
+      res.status(200).json({
+        status: 'success',
+        data: {
+          messageId: sentTpl.messageId,
+          via: 'template',
+          templateName,
+          hint: 'Template de permissão enviado. O contacto deve autorizar no WhatsApp.',
+        },
+      });
+      return;
     }
 
     const bodyText =
@@ -185,6 +215,7 @@ export async function postWhatsappCallPermissionRequest(
       status: 'success',
       data: {
         messageId: sent.messageId,
+        via: 'free_form',
         hint: 'O contacto deve ver no WhatsApp um pedido interativo para autorizar a ligação.',
       },
     });

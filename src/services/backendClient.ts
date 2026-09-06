@@ -14,6 +14,10 @@ export type CallContactContext = {
   phoneNumberId: string;
   accessToken: string;
   displayPhoneNumber: string | null;
+  callPermissionTemplateName?: string | null;
+  callPermissionTemplateLanguage?: string | null;
+  /** Textos do body do template (ordem Meta), já preenchidos para o contacto. */
+  callPermissionTemplateBodyParams?: string[];
 };
 
 export async function fetchCallContactContext(

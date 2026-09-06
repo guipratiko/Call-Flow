@@ -185,6 +185,58 @@ export async function sendCallPermissionRequestMessage(params: {
   return { messageId };
 }
 
+/** Envia template APPROVED com call_permission_request (fora da janela 24h). */
+export async function sendCallPermissionTemplateMessage(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
+  templateName: string;
+  languageCode: string;
+  bodyParams?: string[];
+}): Promise<{ messageId: string }> {
+  const url = `${META_GRAPH_BASE_URL}/${encodeURIComponent(params.phoneNumberId)}/messages`;
+  const components: Array<Record<string, unknown>> = [];
+  const bodyParams = Array.isArray(params.bodyParams) ? params.bodyParams.filter(Boolean) : [];
+  if (bodyParams.length > 0) {
+    components.push({
+      type: 'body',
+      parameters: bodyParams.map((text) => ({ type: 'text', text: String(text) })),
+    });
+  }
+  const res = await axios.post(
+    url,
+    {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: params.to,
+      type: 'template',
+      template: {
+        name: params.templateName,
+        language: { code: params.languageCode || 'pt_BR' },
+        ...(components.length > 0 ? { components } : {}),
+      },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${params.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 20_000,
+      validateStatus: () => true,
+    }
+  );
+  if (res.status >= 400) {
+    throw new Error(formatMetaGraphErrorMessage(res.data) || `Graph ${res.status}`);
+  }
+  const messageId = String(
+    (res.data as { messages?: Array<{ id?: string }> })?.messages?.[0]?.id || ''
+  ).trim();
+  if (!messageId) {
+    throw new Error('A Meta aceitou o template, mas não devolveu message id.');
+  }
+  return { messageId };
+}
+
 /** Espelha o pedido de permissão no chat CRM (Backend). */
 export async function mirrorPermissionRequestToCrm(params: {
   userId: string;
