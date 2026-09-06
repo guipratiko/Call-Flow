@@ -125,11 +125,18 @@ export async function postWhatsappCallPermissionRequest(
       phoneNumberId: ctx.phoneNumberId,
       accessToken: ctx.accessToken,
     });
-    if (permission.status === 'permanent' || permission.isPermanent) {
+    if (
+      permission.canStartCall ||
+      permission.isPermanent ||
+      permission.status === 'temporary' ||
+      permission.status === 'permanent'
+    ) {
       throw new HttpError(
         400,
-        'Já existe permissão permanente; não é necessário pedir de novo.',
-        '138017'
+        'Permissão já concedida. Use o botão de ligar (não peça autorização outra vez).',
+        permission.isPermanent || permission.status === 'permanent'
+          ? '138017'
+          : 'PERMISSION_ALREADY_GRANTED'
       );
     }
     if (!permission.canRequestPermission) {

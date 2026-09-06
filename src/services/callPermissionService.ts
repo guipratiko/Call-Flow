@@ -125,6 +125,41 @@ export async function upsertCallPermissionFromWebhook(params: {
   );
 }
 
+/** Persiste no Postgres o que a Meta já considera granted (evita re-pedir). */
+export async function upsertGrantedFromMeta(params: {
+  userId: string;
+  instanceId: string;
+  waId: string;
+  status: CallPermissionStatus;
+  isPermanent: boolean;
+  expiresAt: Date | null;
+}): Promise<void> {
+  if (params.status !== 'temporary' && params.status !== 'permanent') return;
+  const pool = getPgPool();
+  await pool.query(
+    `INSERT INTO whatsapp_call_permissions (
+       user_id, instance_id, wa_id, contact_id, status, response,
+       is_permanent, expires_at, response_source, request_wamid, source, updated_at
+     ) VALUES ($1, $2, $3, NULL, $4, 'accept', $5, $6, 'meta_sync', NULL, 'meta_call_permissions', NOW())
+     ON CONFLICT (user_id, instance_id, wa_id)
+     DO UPDATE SET
+       status = EXCLUDED.status,
+       response = COALESCE(whatsapp_call_permissions.response, EXCLUDED.response),
+       is_permanent = EXCLUDED.is_permanent OR whatsapp_call_permissions.is_permanent,
+       expires_at = COALESCE(EXCLUDED.expires_at, whatsapp_call_permissions.expires_at),
+       source = EXCLUDED.source,
+       updated_at = NOW()`,
+    [
+      params.userId,
+      params.instanceId,
+      params.waId,
+      params.status,
+      params.isPermanent || params.status === 'permanent',
+      params.expiresAt,
+    ]
+  );
+}
+
 export async function markLastCall(params: {
   userId: string;
   instanceId: string;
@@ -305,6 +340,20 @@ export async function resolveCallPermissionForContact(params: {
         meta.canRequestPermission !== false &&
         status !== 'permanent' &&
         !canStartCall;
+
+      if (
+        (mapped === 'temporary' || mapped === 'permanent') &&
+        !localPermissionActive
+      ) {
+        void upsertGrantedFromMeta({
+          userId: params.userId,
+          instanceId: params.instanceId,
+          waId: params.waId,
+          status: mapped,
+          isPermanent: mapped === 'permanent' || meta.isPermanent,
+          expiresAt,
+        }).catch(() => undefined);
+      }
     }
   }
 
