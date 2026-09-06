@@ -5,6 +5,7 @@ import { fetchCallContactContext } from '../services/backendClient';
 import { resolveCallPermissionForContact } from '../services/callPermissionService';
 import {
   connectWhatsappCall,
+  mirrorPermissionRequestToCrm,
   rememberPendingCall,
   sendCallPermissionRequestMessage,
   terminateWhatsappCall,
@@ -17,6 +18,37 @@ import {
   assertCallStartRateLimit,
   assertPermissionRequestRateLimit,
 } from '../utils/operatorRateLimit';
+import axios from 'axios';
+import { META_GRAPH_BASE_URL } from '../config/constants';
+
+async function assertCallingEnabledOnNumber(params: {
+  phoneNumberId: string;
+  accessToken: string;
+}): Promise<void> {
+  try {
+    const res = await axios.get(
+      `${META_GRAPH_BASE_URL}/${encodeURIComponent(params.phoneNumberId)}/settings`,
+      {
+        headers: { Authorization: `Bearer ${params.accessToken}` },
+        timeout: 15_000,
+        validateStatus: () => true,
+      }
+    );
+    if (res.status >= 400) return;
+    const calling = (res.data as { calling?: { status?: string } })?.calling;
+    const st = String(calling?.status || '').toUpperCase();
+    if (st && st !== 'ENABLED') {
+      throw new HttpError(
+        400,
+        'Calling API ainda não está ENABLED neste número. Abra Configurações da instância → Ativar Calling (Meta).',
+        '138000'
+      );
+    }
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+  }
+}
+
 
 async function loadCloudContext(req: CallFlowAuthRequest, contactId: string) {
   const userId = req.tenantUserId;
@@ -81,6 +113,11 @@ export async function postWhatsappCallPermissionRequest(
       throw new HttpError(403, ctx.bicReason || 'Calling indisponível neste número.');
     }
 
+    await assertCallingEnabledOnNumber({
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+    });
+
     const permission = await resolveCallPermissionForContact({
       userId: ctx.userId,
       instanceId: ctx.instanceId,
@@ -129,7 +166,21 @@ export async function postWhatsappCallPermissionRequest(
       bodyText,
     });
 
-    res.status(200).json({ status: 'success', data: { messageId: sent.messageId } });
+    await mirrorPermissionRequestToCrm({
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      contactPhone: ctx.waId,
+      messageId: sent.messageId,
+      bodyText,
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        messageId: sent.messageId,
+        hint: 'O contacto deve ver no WhatsApp um pedido interativo para autorizar a ligação.',
+      },
+    });
   } catch (error: unknown) {
     next(error);
   }
@@ -149,6 +200,11 @@ export async function postWhatsappCall(
     if (ctx.bicBlocked) {
       throw new HttpError(403, ctx.bicReason || 'Calling indisponível neste número.');
     }
+
+    await assertCallingEnabledOnNumber({
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+    });
 
     const sdp = String(req.body?.sdp || '').trim();
     if (!sdp) throw new HttpError(400, 'sdp é obrigatório (oferta WebRTC).');

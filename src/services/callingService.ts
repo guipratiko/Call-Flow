@@ -179,7 +179,45 @@ export async function sendCallPermissionRequestMessage(params: {
   const messageId = String(
     (res.data as { messages?: Array<{ id?: string }> })?.messages?.[0]?.id || ''
   ).trim();
+  if (!messageId) {
+    throw new Error('A Meta aceitou o pedido, mas não devolveu message id.');
+  }
   return { messageId };
+}
+
+/** Espelha o pedido de permissão no chat CRM (Backend). */
+export async function mirrorPermissionRequestToCrm(params: {
+  userId: string;
+  instanceId: string;
+  contactPhone: string;
+  messageId: string;
+  bodyText: string;
+}): Promise<void> {
+  const base = ONLYFLOW_BACKEND_CONFIG.BASE_URL;
+  if (!base) return;
+  try {
+    await axios.post(
+      `${base}/api/internal/workflow/crm-mirror-outbound`,
+      {
+        userId: params.userId,
+        instanceId: params.instanceId,
+        contactPhone: params.contactPhone,
+        messageId: params.messageId,
+        content: `${params.bodyText}\n\n• Permitir\n• Permitir temporariamente\n• Recusar`,
+        messageType: 'call_permission_request',
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-onlyflow-internal-key': ONLYFLOW_BACKEND_CONFIG.INTERNAL_KEY,
+        },
+        timeout: ONLYFLOW_BACKEND_CONFIG.HTTP_TIMEOUT_MS,
+        validateStatus: () => true,
+      }
+    );
+  } catch {
+    /* ignore mirror failures */
+  }
 }
 
 export async function applyCallWebhookEvent(params: {
