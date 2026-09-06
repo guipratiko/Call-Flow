@@ -178,6 +178,7 @@ async function fetchMetaCallPermission(params: {
 }): Promise<{
   status: string | null;
   expirationTime: number | null;
+  isPermanent: boolean;
   canStartCall: boolean;
   canRequestPermission: boolean;
 } | null> {
@@ -191,24 +192,47 @@ async function fetchMetaCallPermission(params: {
     });
     if (res.status >= 400) return null;
     const data = res.data as {
-      permission?: { status?: string; expiration_time?: number };
+      permission?: {
+        status?: string;
+        expiration_time?: number;
+        is_permanent?: boolean;
+      };
       actions?: Array<{ action_name?: string; can_perform_action?: boolean }>;
     };
     const actions = Array.isArray(data.actions) ? data.actions : [];
     const start = actions.find((a) => a.action_name === 'start_call');
     const request = actions.find((a) => a.action_name === 'send_call_permission_request');
+    const rawStatus = data.permission?.status ? String(data.permission.status).toLowerCase() : null;
     return {
-      status: data.permission?.status ? String(data.permission.status) : null,
+      status: rawStatus,
       expirationTime:
         data.permission?.expiration_time != null && Number.isFinite(Number(data.permission.expiration_time))
           ? Number(data.permission.expiration_time)
           : null,
+      isPermanent:
+        data.permission?.is_permanent === true ||
+        String(data.permission?.is_permanent).toLowerCase() === 'true',
       canStartCall: start?.can_perform_action === true,
       canRequestPermission: request?.can_perform_action !== false,
     };
   } catch {
     return null;
   }
+}
+
+function mapMetaPermissionStatus(
+  metaStatus: string | null,
+  isPermanent: boolean
+): CallPermissionStatus | null {
+  if (!metaStatus) return null;
+  const s = metaStatus.toLowerCase();
+  if (s === 'permanent' || (s === 'granted' && isPermanent)) return 'permanent';
+  if (s === 'temporary' || s === 'granted' || s === 'temporarily_granted') return 'temporary';
+  if (s === 'no_permission' || s === 'denied' || s === 'expired' || s === 'rejected') {
+    return s === 'rejected' || s === 'denied' ? 'rejected' : 'no_permission';
+  }
+  if (s === 'pending') return null;
+  return null;
 }
 
 export async function resolveCallPermissionForContact(params: {
@@ -235,13 +259,14 @@ export async function resolveCallPermissionForContact(params: {
   const row = local.rows[0];
   let status: CallPermissionStatus = (row?.status as CallPermissionStatus) || 'no_permission';
   let expiresAt = row?.expires_at ?? null;
-  const isPermanent = row?.is_permanent === true || status === 'permanent';
+  let isPermanent = row?.is_permanent === true || status === 'permanent';
 
   if (status === 'temporary' && expiresAt && expiresAt.getTime() <= Date.now()) {
     status = 'no_permission';
   }
 
-  let canStartCall = isPermissionActive({ status, isPermanent, expiresAt });
+  const localPermissionActive = isPermissionActive({ status, isPermanent, expiresAt });
+  let canStartCall = localPermissionActive;
   let canRequestPermission = status !== 'permanent';
   let metaPermissionStatus: string | null = null;
 
@@ -253,14 +278,33 @@ export async function resolveCallPermissionForContact(params: {
     });
     if (meta) {
       metaPermissionStatus = meta.status;
-      canStartCall = meta.canStartCall;
-      canRequestPermission = meta.canRequestPermission && meta.status !== 'permanent';
-      if (meta.status === 'permanent' || meta.status === 'temporary' || meta.status === 'no_permission') {
-        status = meta.status;
+      const mapped = mapMetaPermissionStatus(meta.status, meta.isPermanent);
+      if (mapped) {
+        status = mapped;
+        isPermanent = mapped === 'permanent' || meta.isPermanent;
       }
       if (meta.expirationTime) {
         expiresAt = new Date(meta.expirationTime * 1000);
       }
+
+      // Meta devolve status "granted" (não temporary/permanent). start_call pode
+      // ser false se Calling estiver DISABLED — mesmo assim a permissão do user vale.
+      if (meta.canStartCall) {
+        canStartCall = true;
+      } else if (
+        localPermissionActive ||
+        mapped === 'temporary' ||
+        mapped === 'permanent'
+      ) {
+        canStartCall = true;
+      } else {
+        canStartCall = false;
+      }
+
+      canRequestPermission =
+        meta.canRequestPermission !== false &&
+        status !== 'permanent' &&
+        !canStartCall;
     }
   }
 
