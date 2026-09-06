@@ -1,0 +1,33 @@
+{
+  "name": "call-flow",
+  "version": "1.0.0",
+  "description": "Microserviço OnlyFlow — WhatsApp Cloud Calling API (permissão + VoIP)",
+  "main": "dist/server.js",
+  "scripts": {
+    "start": "node dist/server.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc"
+  },
+  "license": "ISC",
+  "engines": {
+    "node": ">=18",
+    "npm": ">=10.8.2 <11"
+  },
+  "dependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.10.0",
+    "@types/pg": "^8.11.10",
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "ts-node-dev": "^2.0.0"
+  }
+}

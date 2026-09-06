@@ -1,0 +1,219 @@
+import { Response, NextFunction } from 'express';
+import { CallFlowAuthRequest } from '../middleware/auth';
+import { HttpError } from '../middleware/errorHandler';
+import { fetchCallContactContext } from '../services/backendClient';
+import { resolveCallPermissionForContact } from '../services/callPermissionService';
+import {
+  connectWhatsappCall,
+  rememberPendingCall,
+  sendCallPermissionRequestMessage,
+  terminateWhatsappCall,
+} from '../services/callingService';
+import {
+  isBusinessInitiatedCallingBlocked,
+  isWithinCustomerServiceWindow,
+} from '../utils/callingPolicy';
+import {
+  assertCallStartRateLimit,
+  assertPermissionRequestRateLimit,
+} from '../utils/operatorRateLimit';
+
+async function loadCloudContext(req: CallFlowAuthRequest, contactId: string) {
+  const userId = req.tenantUserId;
+  if (!userId) throw new HttpError(401, 'Usuário não autenticado');
+  const ctx = await fetchCallContactContext(userId, contactId);
+  if (ctx.integration !== 'WHATSAPP-CLOUD') {
+    throw new HttpError(400, 'Ligações WhatsApp só na API Oficial.');
+  }
+  const geo = isBusinessInitiatedCallingBlocked(ctx.displayPhoneNumber);
+  return { ...ctx, bicBlocked: geo.blocked, bicReason: geo.reason };
+}
+
+/** GET /contacts/:contactId/whatsapp-call-permission */
+export async function getWhatsappCallPermission(
+  req: CallFlowAuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ctx = await loadCloudContext(req, req.params.contactId);
+    const permission = await resolveCallPermissionForContact({
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      waId: ctx.waId,
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+    });
+    const inWindow = isWithinCustomerServiceWindow(ctx.lastCustomerMessageAt);
+    res.status(200).json({
+      status: 'success',
+      data: {
+        ...permission,
+        expiresAt: permission.expiresAt ? permission.expiresAt.toISOString() : null,
+        supported: true,
+        businessInitiatedBlocked: ctx.bicBlocked,
+        businessInitiatedBlockedReason: ctx.bicReason,
+        withinCustomerServiceWindow: inWindow,
+        canRequestPermission:
+          !ctx.bicBlocked &&
+          permission.canRequestPermission &&
+          permission.status !== 'permanent',
+        canStartCall: !ctx.bicBlocked && permission.canStartCall,
+      },
+    });
+  } catch (error: unknown) {
+    next(error);
+  }
+}
+
+/** POST /contacts/:contactId/whatsapp-call-permission-request */
+export async function postWhatsappCallPermissionRequest(
+  req: CallFlowAuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const operatorId = req.jwtUserId || req.tenantUserId || '';
+    assertPermissionRequestRateLimit(operatorId);
+
+    const ctx = await loadCloudContext(req, req.params.contactId);
+    if (ctx.bicBlocked) {
+      throw new HttpError(403, ctx.bicReason || 'Calling indisponível neste número.');
+    }
+
+    const permission = await resolveCallPermissionForContact({
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      waId: ctx.waId,
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+    });
+    if (permission.status === 'permanent' || permission.isPermanent) {
+      throw new HttpError(
+        400,
+        'Já existe permissão permanente; não é necessário pedir de novo.',
+        '138017'
+      );
+    }
+    if (!permission.canRequestPermission) {
+      throw new HttpError(
+        429,
+        'Limite de pedidos de permissão atingido (Meta: 1/24h, 2/7 dias).',
+        '138009'
+      );
+    }
+
+    if (!isWithinCustomerServiceWindow(ctx.lastCustomerMessageAt)) {
+      throw new HttpError(
+        400,
+        'Fora da janela de 24h: use um template aprovado de permissão de chamada (política Meta). Pedido free-form bloqueado.',
+        'OUTSIDE_CSW'
+      );
+    }
+
+    const bodyText =
+      String(req.body?.text || '').trim() ||
+      `Olá${ctx.contactName ? ` ${ctx.contactName}` : ''}! Gostaríamos de ligar para você no WhatsApp para dar continuidade ao seu atendimento. Pode autorizar?`.trim();
+
+    if (bodyText.length < 20) {
+      throw new HttpError(
+        400,
+        'O pedido de permissão precisa de um texto com contexto (mín. 20 caracteres).'
+      );
+    }
+
+    const sent = await sendCallPermissionRequestMessage({
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+      to: ctx.waId,
+      bodyText,
+    });
+
+    res.status(200).json({ status: 'success', data: { messageId: sent.messageId } });
+  } catch (error: unknown) {
+    next(error);
+  }
+}
+
+/** POST /contacts/:contactId/whatsapp-call */
+export async function postWhatsappCall(
+  req: CallFlowAuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const operatorId = req.jwtUserId || req.tenantUserId || '';
+    assertCallStartRateLimit(operatorId);
+
+    const ctx = await loadCloudContext(req, req.params.contactId);
+    if (ctx.bicBlocked) {
+      throw new HttpError(403, ctx.bicReason || 'Calling indisponível neste número.');
+    }
+
+    const sdp = String(req.body?.sdp || '').trim();
+    if (!sdp) throw new HttpError(400, 'sdp é obrigatório (oferta WebRTC).');
+
+    const permission = await resolveCallPermissionForContact({
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      waId: ctx.waId,
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+    });
+    if (!permission.canStartCall) {
+      throw new HttpError(
+        400,
+        'Sem permissão ativa para ligar. Peça autorização ao contacto primeiro.'
+      );
+    }
+
+    const { callId } = await connectWhatsappCall({
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+      to: ctx.waId,
+      sdp,
+    });
+    rememberPendingCall(callId, {
+      userId: ctx.userId,
+      contactId: ctx.contactId,
+      instanceId: ctx.instanceId,
+      waId: ctx.waId,
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        callId,
+        consecutiveUnansweredHint:
+          (permission.consecutiveUnanswered || 0) >= 2
+            ? 'Atenção: várias ligações sem resposta podem revogar a permissão (Meta: 4 consecutivas).'
+            : null,
+      },
+    });
+  } catch (error: unknown) {
+    next(error);
+  }
+}
+
+/** POST /contacts/:contactId/whatsapp-call/terminate */
+export async function postWhatsappCallTerminate(
+  req: CallFlowAuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ctx = await loadCloudContext(req, req.params.contactId);
+    const callId = String(req.body?.callId || '').trim();
+    if (!callId) throw new HttpError(400, 'callId é obrigatório.');
+
+    await terminateWhatsappCall({
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+      callId,
+    });
+
+    res.status(200).json({ status: 'success' });
+  } catch (error: unknown) {
+    next(error);
+  }
+}
