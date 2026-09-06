@@ -11,10 +11,14 @@ export type WhatsappCallSignalingPayload = {
   contactId: string;
   instanceId: string;
   callId: string;
-  event: 'connect' | 'status' | 'terminate';
+  event: 'connect' | 'status' | 'terminate' | 'incoming';
   status?: string | null;
   sdp?: string | null;
   sdpType?: string | null;
+  direction?: 'USER_INITIATED' | 'BUSINESS_INITIATED' | null;
+  waId?: string | null;
+  contactName?: string | null;
+  contactAvatar?: string | null;
 };
 
 type PendingCall = {
@@ -22,6 +26,7 @@ type PendingCall = {
   contactId: string;
   instanceId: string;
   waId: string;
+  direction?: 'USER_INITIATED' | 'BUSINESS_INITIATED';
 };
 
 const pendingByCallId = new Map<string, PendingCall>();
@@ -141,6 +146,94 @@ export async function terminateWhatsappCall(params: {
   );
   if (res.status >= 400) {
     throw new Error(formatMetaGraphErrorMessage(res.data) || `Calling API ${res.status}`);
+  }
+}
+
+async function postCallAction(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  callId: string;
+  action: 'pre_accept' | 'accept' | 'reject';
+  sdp?: string;
+}): Promise<void> {
+  const url = `${META_GRAPH_BASE_URL}/${encodeURIComponent(params.phoneNumberId)}/calls`;
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    call_id: params.callId,
+    action: params.action,
+  };
+  if (params.action !== 'reject' && params.sdp) {
+    body.session = { sdp_type: 'answer', sdp: params.sdp };
+  }
+  const res = await axios.post(url, body, {
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 30_000,
+    validateStatus: () => true,
+  });
+  if (res.status >= 400) {
+    throw new Error(formatMetaGraphErrorMessage(res.data) || `Calling API ${res.status}`);
+  }
+}
+
+/** UIC: pré-aceitar oferta (SDP answer provisório / rápido). */
+export async function preAcceptWhatsappCall(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  callId: string;
+  sdp: string;
+}): Promise<void> {
+  await postCallAction({ ...params, action: 'pre_accept' });
+}
+
+/** UIC: aceitar chamada com SDP answer final. */
+export async function acceptWhatsappCall(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  callId: string;
+  sdp: string;
+}): Promise<void> {
+  await postCallAction({ ...params, action: 'accept' });
+}
+
+/** UIC: recusar chamada entrante. */
+export async function rejectWhatsappCall(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  callId: string;
+}): Promise<void> {
+  await postCallAction({ ...params, action: 'reject' });
+}
+
+async function notifyBackendUpsertCall(params: {
+  userId: string;
+  instanceId: string;
+  contactId: string | null;
+  callId: string;
+  waId: string;
+  direction: 'USER_INITIATED' | 'BUSINESS_INITIATED';
+  status: string;
+  event: string;
+}): Promise<void> {
+  const base = ONLYFLOW_BACKEND_CONFIG.BASE_URL;
+  if (!base) return;
+  try {
+    await axios.post(
+      `${base}/api/internal/call-flow/upsert-call`,
+      params,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-onlyflow-internal-key': ONLYFLOW_BACKEND_CONFIG.INTERNAL_KEY,
+        },
+        timeout: ONLYFLOW_BACKEND_CONFIG.HTTP_TIMEOUT_MS,
+        validateStatus: () => true,
+      }
+    );
+  } catch {
+    /* ignore */
   }
 }
 
@@ -278,15 +371,63 @@ export async function applyCallWebhookEvent(params: {
   status?: string | null;
   sdp?: string | null;
   sdpType?: string | null;
+  direction?: string | null;
   fallbackUserId?: string;
   fallbackInstanceId?: string;
+  fallbackContactId?: string;
   fallbackWaId?: string;
+  contactName?: string | null;
+  contactAvatar?: string | null;
 }): Promise<{ consecutiveUnanswered: number }> {
   const pending = pendingByCallId.get(params.callId);
   const userId = pending?.userId || params.fallbackUserId;
   if (!userId) return { consecutiveUnanswered: 0 };
-  const contactId = pending?.contactId || '';
+  const contactId = pending?.contactId || params.fallbackContactId || '';
   const instanceId = pending?.instanceId || params.fallbackInstanceId || '';
+  const waId = pending?.waId || params.fallbackWaId || '';
+  const directionRaw = String(params.direction || pending?.direction || '').toUpperCase();
+  const direction: 'USER_INITIATED' | 'BUSINESS_INITIATED' =
+    directionRaw === 'USER_INITIATED' ? 'USER_INITIATED' : 'BUSINESS_INITIATED';
+  const sdpType = String(params.sdpType || '').toLowerCase();
+  const isIncomingOffer =
+    params.event === 'connect' &&
+    Boolean(params.sdp) &&
+    (direction === 'USER_INITIATED' || (!pending && sdpType === 'offer'));
+
+  if (isIncomingOffer) {
+    rememberPendingCall(params.callId, {
+      userId,
+      contactId,
+      instanceId,
+      waId,
+      direction: 'USER_INITIATED',
+    });
+    await notifyBackendSignaling(userId, {
+      contactId,
+      instanceId,
+      callId: params.callId,
+      event: 'incoming',
+      status: params.status ?? 'RINGING',
+      sdp: params.sdp ?? null,
+      sdpType: params.sdpType || 'offer',
+      direction: 'USER_INITIATED',
+      waId: waId || null,
+      contactName: params.contactName ?? null,
+      contactAvatar: params.contactAvatar ?? null,
+    });
+    await notifyBackendUpsertCall({
+      userId,
+      instanceId,
+      contactId: contactId || null,
+      callId: params.callId,
+      waId,
+      direction: 'USER_INITIATED',
+      status: 'ringing',
+      event: 'incoming',
+    });
+    return { consecutiveUnanswered: 0 };
+  }
+
   await notifyBackendSignaling(userId, {
     contactId,
     instanceId,
@@ -295,9 +436,34 @@ export async function applyCallWebhookEvent(params: {
     status: params.status ?? null,
     sdp: params.sdp ?? null,
     sdpType: params.sdpType ?? null,
+    direction: pending?.direction || direction,
+    waId: waId || null,
   });
+
+  if (params.event === 'connect' || params.event === 'status' || params.event === 'terminate') {
+    const statusMap =
+      params.event === 'terminate'
+        ? 'ended'
+        : String(params.status || '').toUpperCase() === 'ACCEPTED'
+          ? 'connected'
+          : String(params.status || '').toUpperCase() === 'REJECTED'
+            ? 'rejected'
+            : params.event === 'connect'
+              ? 'ringing'
+              : 'ringing';
+    await notifyBackendUpsertCall({
+      userId,
+      instanceId,
+      contactId: contactId || null,
+      callId: params.callId,
+      waId,
+      direction: pending?.direction || direction,
+      status: statusMap,
+      event: params.event,
+    });
+  }
+
   let consecutiveUnanswered = 0;
-  const waId = pending?.waId || params.fallbackWaId;
   if (waId && instanceId) {
     try {
       const marked = await markLastCall({

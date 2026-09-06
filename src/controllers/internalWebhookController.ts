@@ -62,18 +62,26 @@ export async function postInternalCallsWebhook(
       status,
       sdp,
       sdpType,
+      direction,
       fallbackUserId,
       fallbackInstanceId,
+      fallbackContactId,
       fallbackWaId,
+      contactName,
+      contactAvatar,
     } = req.body as {
       callId?: string;
       event?: 'connect' | 'status' | 'terminate';
       status?: string | null;
       sdp?: string | null;
       sdpType?: string | null;
+      direction?: string | null;
       fallbackUserId?: string;
       fallbackInstanceId?: string;
+      fallbackContactId?: string;
       fallbackWaId?: string;
+      contactName?: string | null;
+      contactAvatar?: string | null;
     };
     if (!callId || !event) {
       res.status(400).json({ status: 'error', message: 'callId e event são obrigatórios.' });
@@ -85,9 +93,13 @@ export async function postInternalCallsWebhook(
       status,
       sdp,
       sdpType,
+      direction,
       fallbackUserId,
       fallbackInstanceId,
+      fallbackContactId,
       fallbackWaId,
+      contactName,
+      contactAvatar,
     });
     res.status(200).json({ status: 'success', data: result });
   } catch (error: unknown) {

@@ -4,8 +4,11 @@ import { HttpError } from '../middleware/errorHandler';
 import { fetchCallContactContext } from '../services/backendClient';
 import { resolveCallPermissionForContact } from '../services/callPermissionService';
 import {
+  acceptWhatsappCall,
   connectWhatsappCall,
   mirrorPermissionRequestToCrm,
+  preAcceptWhatsappCall,
+  rejectWhatsappCall,
   rememberPendingCall,
   sendCallPermissionRequestMessage,
   sendCallPermissionTemplateMessage,
@@ -272,6 +275,7 @@ export async function postWhatsappCall(
       contactId: ctx.contactId,
       instanceId: ctx.instanceId,
       waId: ctx.waId,
+      direction: 'BUSINESS_INITIATED',
     });
 
     res.status(200).json({
@@ -284,6 +288,95 @@ export async function postWhatsappCall(
             : null,
       },
     });
+  } catch (error: unknown) {
+    next(error);
+  }
+}
+
+/** POST /contacts/:contactId/whatsapp-call/pre-accept — UIC */
+export async function postWhatsappCallPreAccept(
+  req: CallFlowAuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ctx = await loadCloudContext(req, req.params.contactId);
+    const callId = String(req.body?.callId || '').trim();
+    const sdp = String(req.body?.sdp || '').trim();
+    if (!callId) throw new HttpError(400, 'callId é obrigatório.');
+    if (!sdp) throw new HttpError(400, 'sdp é obrigatório (answer WebRTC).');
+
+    await preAcceptWhatsappCall({
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+      callId,
+      sdp,
+    });
+    rememberPendingCall(callId, {
+      userId: ctx.userId,
+      contactId: ctx.contactId,
+      instanceId: ctx.instanceId,
+      waId: ctx.waId,
+      direction: 'USER_INITIATED',
+    });
+
+    res.status(200).json({ status: 'success' });
+  } catch (error: unknown) {
+    next(error);
+  }
+}
+
+/** POST /contacts/:contactId/whatsapp-call/accept — UIC */
+export async function postWhatsappCallAccept(
+  req: CallFlowAuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ctx = await loadCloudContext(req, req.params.contactId);
+    const callId = String(req.body?.callId || '').trim();
+    const sdp = String(req.body?.sdp || '').trim();
+    if (!callId) throw new HttpError(400, 'callId é obrigatório.');
+    if (!sdp) throw new HttpError(400, 'sdp é obrigatório (answer WebRTC).');
+
+    await acceptWhatsappCall({
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+      callId,
+      sdp,
+    });
+    rememberPendingCall(callId, {
+      userId: ctx.userId,
+      contactId: ctx.contactId,
+      instanceId: ctx.instanceId,
+      waId: ctx.waId,
+      direction: 'USER_INITIATED',
+    });
+
+    res.status(200).json({ status: 'success', data: { callId } });
+  } catch (error: unknown) {
+    next(error);
+  }
+}
+
+/** POST /contacts/:contactId/whatsapp-call/reject — UIC */
+export async function postWhatsappCallReject(
+  req: CallFlowAuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const ctx = await loadCloudContext(req, req.params.contactId);
+    const callId = String(req.body?.callId || '').trim();
+    if (!callId) throw new HttpError(400, 'callId é obrigatório.');
+
+    await rejectWhatsappCall({
+      phoneNumberId: ctx.phoneNumberId,
+      accessToken: ctx.accessToken,
+      callId,
+    });
+
+    res.status(200).json({ status: 'success' });
   } catch (error: unknown) {
     next(error);
   }
