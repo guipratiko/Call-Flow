@@ -457,9 +457,7 @@ export async function applyCallWebhookEvent(params: {
             ? 'missed'
             : params.event === 'terminate'
               ? 'ended'
-              : params.event === 'connect'
-                ? 'ringing'
-                : 'ringing';
+              : 'ringing';
     await notifyBackendUpsertCall({
       userId,
       instanceId,
