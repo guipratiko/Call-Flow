@@ -151,16 +151,13 @@ export async function postWhatsappCallPermissionRequest(
       );
     }
 
-    if (!isWithinCustomerServiceWindow(ctx.lastCustomerMessageAt)) {
-      const templateName = String(ctx.callPermissionTemplateName || '').trim();
-      const languageCode = String(ctx.callPermissionTemplateLanguage || 'pt_BR').trim() || 'pt_BR';
-      if (!templateName) {
-        throw new HttpError(
-          400,
-          'Fora da janela de 24h: selecione um template APPROVED de permissão de ligação nas definições da instância.',
-          'OUTSIDE_CSW'
-        );
-      }
+    // Preferir sempre o template configurado na instância (também dentro das 24h).
+    // Free-form só como fallback se não houver template e estiver na janela de atendimento.
+    const templateName = String(ctx.callPermissionTemplateName || '').trim();
+    const languageCode = String(ctx.callPermissionTemplateLanguage || 'pt_BR').trim() || 'pt_BR';
+    const inWindow = isWithinCustomerServiceWindow(ctx.lastCustomerMessageAt);
+
+    if (templateName) {
       const sentTpl = await sendCallPermissionTemplateMessage({
         phoneNumberId: ctx.phoneNumberId,
         accessToken: ctx.accessToken,
@@ -186,6 +183,14 @@ export async function postWhatsappCallPermissionRequest(
         },
       });
       return;
+    }
+
+    if (!inWindow) {
+      throw new HttpError(
+        400,
+        'Fora da janela de 24h: selecione um template APPROVED de permissão de ligação nas definições da instância.',
+        'OUTSIDE_CSW'
+      );
     }
 
     const bodyText =
