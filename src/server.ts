@@ -2,6 +2,7 @@ import express, { Router } from 'express';
 import { SERVER_CONFIG, DATABASE_CONFIG, resolveOnlyflowApiBaseUrl } from './config/constants';
 import { callFlowCors } from './middleware/cors';
 import healthRoutes from './routes/health';
+import publicStatusRoutes from './routes/publicStatus';
 import callsRoutes from './routes/calls';
 import internalRoutes from './routes/internal';
 import { errorHandler, HttpError } from './middleware/errorHandler';
@@ -13,6 +14,7 @@ app.use(callFlowCors);
 const api = Router();
 api.use('/call-flow', callsRoutes);
 api.use('/internal/call-flow', internalRoutes);
+api.use('/public', publicStatusRoutes);
 
 app.use('/api', api);
 app.use('/', healthRoutes);
