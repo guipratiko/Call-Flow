@@ -207,7 +207,8 @@ export async function rejectWhatsappCall(params: {
   await postCallAction({ ...params, action: 'reject' });
 }
 
-async function notifyBackendUpsertCall(params: {
+/** Persiste estado da ligação no Backend (whatsapp_calls). */
+export async function notifyBackendUpsertCall(params: {
   userId: string;
   instanceId: string;
   contactId: string | null;
@@ -441,16 +442,24 @@ export async function applyCallWebhookEvent(params: {
   });
 
   if (params.event === 'connect' || params.event === 'status' || params.event === 'terminate') {
+    const statusUpper = String(params.status || '').toUpperCase();
+    const isMissed =
+      statusUpper === 'MISSED' ||
+      statusUpper === 'TIMEOUT' ||
+      statusUpper === 'FAILED' ||
+      statusUpper === 'BUSY';
     const statusMap =
-      params.event === 'terminate'
-        ? 'ended'
-        : String(params.status || '').toUpperCase() === 'ACCEPTED'
+      statusUpper === 'REJECTED'
+        ? 'rejected'
+        : statusUpper === 'ACCEPTED'
           ? 'connected'
-          : String(params.status || '').toUpperCase() === 'REJECTED'
-            ? 'rejected'
-            : params.event === 'connect'
-              ? 'ringing'
-              : 'ringing';
+          : isMissed
+            ? 'missed'
+            : params.event === 'terminate'
+              ? 'ended'
+              : params.event === 'connect'
+                ? 'ringing'
+                : 'ringing';
     await notifyBackendUpsertCall({
       userId,
       instanceId,

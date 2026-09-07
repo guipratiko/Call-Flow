@@ -7,6 +7,7 @@ import {
   acceptWhatsappCall,
   connectWhatsappCall,
   mirrorPermissionRequestToCrm,
+  notifyBackendUpsertCall,
   preAcceptWhatsappCall,
   rejectWhatsappCall,
   rememberPendingCall,
@@ -379,6 +380,17 @@ export async function postWhatsappCallReject(
       phoneNumberId: ctx.phoneNumberId,
       accessToken: ctx.accessToken,
       callId,
+    });
+
+    await notifyBackendUpsertCall({
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      contactId: ctx.contactId,
+      callId,
+      waId: ctx.waId || '',
+      direction: 'USER_INITIATED',
+      status: 'rejected',
+      event: 'reject',
     });
 
     res.status(200).json({ status: 'success' });
